@@ -1,4 +1,4 @@
-DATA_DIR=$1
+DATA_PATH=$1
 MODEL_SAVE_DIR=$2
 CACHE_DIR=$3
 
@@ -6,7 +6,7 @@ cd data_creation
 torchrun --nproc_per_node=2 \
   --master_port=2568 train_special_tokens.py \
   --model_name_or_path meta-llama/Llama-2-7b-hf \
-  --data_path $DATA_DIR \
+  --data_path $DATA_PATH \
   --bf16  True \
   --output_dir $MODEL_SAVE_DIR \
   --num_train_epochs 3  \
