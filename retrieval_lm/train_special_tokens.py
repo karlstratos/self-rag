@@ -24,7 +24,7 @@ from transformers import Trainer
 import json
 import io
 import os
-from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
+# from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
 
 IGNORE_INDEX = -100
 DEFAULT_PAD_TOKEN = "[PAD]"
@@ -283,8 +283,9 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, dat
 def train():
     parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    if model_args.use_flash_attn:
-        replace_llama_attn_with_flash_attn()
+    # import error, fix it later
+    # if model_args.use_flash_attn:
+    #     replace_llama_attn_with_flash_attn()
 
     model = transformers.AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path,
