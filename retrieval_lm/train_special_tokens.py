@@ -24,7 +24,8 @@ from transformers import Trainer
 import json
 import io
 import os
-# from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
+
+from llama_flash_attn_monkey_patch import replace_llama_attn_with_flash_attn
 
 IGNORE_INDEX = -100
 DEFAULT_PAD_TOKEN = "[PAD]"
@@ -70,9 +71,11 @@ class ModelArguments:
         },
     )
 
+
 @dataclass
 class DataArguments:
-    data_path: str = field(default=None, metadata={"help": "Path to the training data."})
+    data_path: str = field(default=None,
+                           metadata={"help": "Path to the training data."})
     separated: bool = field(
         default=False,
         metadata={
@@ -80,14 +83,17 @@ class DataArguments:
         },
     )
 
+
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     optim: str = field(default="adamw_torch")
     model_max_length: int = field(
         default=512,
-        metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
+        metadata={
+            "help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
     )
+
 
 def _make_w_io_base(f, mode: str):
     if not isinstance(f, io.IOBase):
@@ -131,7 +137,9 @@ def jload(f, mode="r"):
     f.close()
     return jdict
 
-def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
+
+def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
+                                   output_dir: str):
     """Collects the state dict and dump to disk."""
     state_dict = trainer.model.state_dict()
     if trainer.args.should_save:
@@ -141,9 +149,9 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
 
 
 def smart_tokenizer_and_embedding_resize(
-    special_tokens_dict: Dict,
-    tokenizer: transformers.PreTrainedTokenizer,
-    model: transformers.PreTrainedModel,
+        special_tokens_dict: Dict,
+        tokenizer: transformers.PreTrainedTokenizer,
+        model: transformers.PreTrainedModel,
 ):
     """Resize tokenizer and embedding.
 
@@ -157,14 +165,17 @@ def smart_tokenizer_and_embedding_resize(
         input_embeddings = model.get_input_embeddings().weight.data
         output_embeddings = model.get_output_embeddings().weight.data
 
-        input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
-        output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
+        input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(dim=0,
+                                                                       keepdim=True)
+        output_embeddings_avg = output_embeddings[:-num_new_tokens].mean(dim=0,
+                                                                         keepdim=True)
 
         input_embeddings[-num_new_tokens:] = input_embeddings_avg
         output_embeddings[-num_new_tokens:] = output_embeddings_avg
 
 
-def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedTokenizer) -> Dict:
+def _tokenize_fn(strings: Sequence[str],
+                 tokenizer: transformers.PreTrainedTokenizer) -> Dict:
     """Tokenize a list of strings."""
     tokenized_list = [
         tokenizer(
@@ -176,9 +187,11 @@ def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedToken
         )
         for text in strings
     ]
-    input_ids = labels = [tokenized.input_ids[0] for tokenized in tokenized_list]
+    input_ids = labels = [tokenized.input_ids[0] for tokenized in
+                          tokenized_list]
     input_ids_lens = labels_lens = [
-        tokenized.input_ids.ne(tokenizer.pad_token_id).sum().item() for tokenized in tokenized_list
+        tokenized.input_ids.ne(tokenizer.pad_token_id).sum().item() for
+        tokenized in tokenized_list
     ]
     return dict(
         input_ids=input_ids,
@@ -189,20 +202,21 @@ def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedToken
 
 
 def preprocess(
-    sources: Sequence[str],
-    targets: Sequence[str],
-    tokenizer: transformers.PreTrainedTokenizer,
-    skip_tokens:Sequence[int],
-    context_markups: Sequence[int],
+        sources: Sequence[str],
+        targets: Sequence[str],
+        tokenizer: transformers.PreTrainedTokenizer,
+        skip_tokens: Sequence[int],
+        context_markups: Sequence[int],
 ) -> Dict:
     """Preprocess the data by tokenizing."""
     examples = [s + t for s, t in zip(sources, targets)]
-    examples_tokenized, sources_tokenized = [_tokenize_fn(strings, tokenizer) for strings in (examples, sources)]
+    examples_tokenized, sources_tokenized = [_tokenize_fn(strings, tokenizer)
+                                             for strings in (examples, sources)]
     input_ids = examples_tokenized["input_ids"]
     labels = copy.deepcopy(input_ids)
     for label, source_len in zip(labels, sources_tokenized["input_ids_lens"]):
         label[:source_len] = IGNORE_INDEX
-    
+
     # special token mask
     if skip_tokens is not None:
         for i, input_id_list in enumerate(input_ids):
@@ -211,38 +225,47 @@ def preprocess(
                     labels[i][j] = IGNORE_INDEX
 
     if context_markups is not None:
-        for i, (label_id_list, source_len) in enumerate(zip(labels, sources_tokenized["input_ids_lens"])):
+        for i, (label_id_list, source_len) in enumerate(
+                zip(labels, sources_tokenized["input_ids_lens"])):
             context_start = False
             for j, orig_token in enumerate(label_id_list[source_len:]):
                 if context_start is False and orig_token == context_markups[0]:
                     context_start = True
-                    start_idx = j+source_len
+                    start_idx = j + source_len
                     for k, orig_token_2 in enumerate(label_id_list[start_idx:]):
                         if orig_token_2 == context_markups[1]:
                             end_idx = start_idx + k
-                    labels[i][start_idx+1:end_idx] = IGNORE_INDEX
+                    labels[i][start_idx + 1:end_idx] = IGNORE_INDEX
                     context_start = False
     return dict(input_ids=input_ids, labels=labels)
+
 
 class SupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
-    def __init__(self, data_path: str, tokenizer: transformers.PreTrainedTokenizer, skip_tokens=None, context_markups=None, separated=False):
+    def __init__(self, data_path: str,
+                 tokenizer: transformers.PreTrainedTokenizer, skip_tokens=None,
+                 context_markups=None, separated=False):
         super(SupervisedDataset, self).__init__()
         logging.warning("Loading data...")
         list_data_dict = jload(data_path)
 
         logging.warning("Formatting inputs...")
-        prompt_input, prompt_no_input, prompt_no_input_paragraph, prompt_no_input_separated = PROMPT_DICT["prompt_input"], PROMPT_DICT["prompt_no_input"], PROMPT_DICT["prompt_no_input_paragraph"], PROMPT_DICT["prompt_no_input_separated"]
+        prompt_input, prompt_no_input = PROMPT_DICT["prompt_input"], \
+        PROMPT_DICT["prompt_no_input"]
         sources = [
-            prompt_input.format_map(example) if example.get("input", "") != "" else prompt_no_input.format_map(example)
+            prompt_input.format_map(example) if example.get("input",
+                                                            "") != "" else prompt_no_input.format_map(
+                example)
             for example in list_data_dict
         ]
-        targets = [f"{example['output']}{tokenizer.eos_token}" for example in list_data_dict]
+        targets = [f"{example['output']}{tokenizer.eos_token}" for example in
+                   list_data_dict]
 
         logging.warning("Tokenizing inputs... This may take some time...")
 
-        data_dict = preprocess(sources, targets, tokenizer, skip_tokens, context_markups=context_markups)
+        data_dict = preprocess(sources, targets, tokenizer, skip_tokens,
+                               context_markups=context_markups)
 
         self.input_ids = data_dict["input_ids"]
         self.labels = data_dict["labels"]
@@ -261,11 +284,15 @@ class DataCollatorForSupervisedDataset(object):
     tokenizer: transformers.PreTrainedTokenizer
 
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+        input_ids, labels = tuple(
+            [instance[key] for instance in instances] for key in
+            ("input_ids", "labels"))
         input_ids = torch.nn.utils.rnn.pad_sequence(
-            input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
+            input_ids, batch_first=True,
+            padding_value=self.tokenizer.pad_token_id
         )
-        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
+        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True,
+                                                 padding_value=IGNORE_INDEX)
         return dict(
             input_ids=input_ids,
             labels=labels,
@@ -273,19 +300,26 @@ class DataCollatorForSupervisedDataset(object):
         )
 
 
-def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_args, skip_tokens=None, context_markups=None) -> Dict:
+def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
+                                data_args, skip_tokens=None,
+                                context_markups=None) -> Dict:
     """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = SupervisedDataset(tokenizer=tokenizer, data_path=data_args.data_path, skip_tokens=skip_tokens, context_markups=context_markups, separated=data_args.separated)
+    train_dataset = SupervisedDataset(tokenizer=tokenizer,
+                                      data_path=data_args.data_path,
+                                      skip_tokens=skip_tokens,
+                                      context_markups=context_markups,
+                                      separated=data_args.separated)
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
-    return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)
+    return dict(train_dataset=train_dataset, eval_dataset=None,
+                data_collator=data_collator)
 
 
 def train():
-    parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
+    parser = transformers.HfArgumentParser(
+        (ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    # import error, fix it later
-    # if model_args.use_flash_attn:
-    #     replace_llama_attn_with_flash_attn()
+    if model_args.use_flash_attn:
+        replace_llama_attn_with_flash_attn()
 
     model = transformers.AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path,
@@ -310,7 +344,16 @@ def train():
 
     # add special tokens
     if model_args.use_special_token is True:
-        special_token_dict = {"additional_special_tokens": ["[No Retrieval]", "[Retrieval]", "[Continue to Use Evidence]", "[Irrelevant]", "[Relevant]", "<paragraph>", "</paragraph>", "[Utility:1]", "[Utility:2]", "[Utility:3]", "[Utility:4]", "[Utility:5]", "[Fully supported]", "[Partially supported]", "[No support / Contradictory]"]}
+        special_token_dict = {
+            "additional_special_tokens": ["[No Retrieval]", "[Retrieval]",
+                                          "[Continue to Use Evidence]",
+                                          "[Irrelevant]", "[Relevant]",
+                                          "<paragraph>", "</paragraph>",
+                                          "[Utility:1]", "[Utility:2]",
+                                          "[Utility:3]", "[Utility:4]",
+                                          "[Utility:5]", "[Fully supported]",
+                                          "[Partially supported]",
+                                          "[No support / Contradictory]"]}
         if tokenizer.pad_token is None:
             special_token_dict["pad_token"] = DEFAULT_PAD_TOKEN
         smart_tokenizer_and_embedding_resize(
@@ -318,7 +361,7 @@ def train():
             tokenizer=tokenizer,
             model=model,
         )
-    
+
     else:
         if tokenizer.pad_token is None:
             smart_tokenizer_and_embedding_resize(
@@ -340,16 +383,23 @@ def train():
                     skip_tokens.append(tokenizer.convert_tokens_to_ids(token))
             else:
                 skip_tokens = None
-            data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args, skip_tokens=skip_tokens, context_markups=context_markups)
+            data_module = make_supervised_data_module(tokenizer=tokenizer,
+                                                      data_args=data_args,
+                                                      skip_tokens=skip_tokens,
+                                                      context_markups=context_markups)
         else:
-            data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+            data_module = make_supervised_data_module(tokenizer=tokenizer,
+                                                      data_args=data_args)
     else:
-        data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+        data_module = make_supervised_data_module(tokenizer=tokenizer,
+                                                  data_args=data_args)
 
-    trainer = Trainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
+    trainer = Trainer(model=model, tokenizer=tokenizer, args=training_args,
+                      **data_module)
     trainer.train()
     trainer.save_state()
-    safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
+    safe_save_model_for_hf_trainer(trainer=trainer,
+                                   output_dir=training_args.output_dir)
 
 
 if __name__ == "__main__":
