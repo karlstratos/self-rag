@@ -7,6 +7,7 @@ import argparse
 from vllm import LLM, SamplingParams
 from utils import TASK_INST, PROMPT_DICT, load_special_tokens, load_jsonlines, \
     postprocess, fix_spacing
+from collections import defaultdict
 
 
 def run_step_generation_batch(model, prompt, paragraphs, max_new_tokens,
@@ -126,7 +127,7 @@ def run_step_generation_batch(model, prompt, paragraphs, max_new_tokens,
                 if tok == ret_tokens["[No Retrieval]"]:
                     ret_token_appear_indices.append(tok_idx)
                     # substrings
-                    print("retrieval_tokens")
+                    # print("retrieval_tokens")
 
             ret_token_score_dict = {}
             retrieval_remap = {}
@@ -182,38 +183,30 @@ def call_model_beam_batch(prompt, model, max_new_tokens=15, ctxs=None,
     if ret_tokens is not None:
         special_tokens += list(ret_tokens.keys())
 
-    if mode == "no_retrieval":
-        sampling_params = SamplingParams(
-            temperature=0.0, top_p=1, max_tokens=max_new_tokens)
-        prompt += "[No Retrieval]"
-        preds = model.generate([prompt], sampling_params)
-        preds = [pred.outputs[0].text.split("\n\n")[0] for pred in preds]
-        return preds[0], prediction_tree
-
-    do_retrieve = False
     if mode == "always_retrieve":
         do_retrieve = True
-
+    elif mode == "no_retrieval":
+        do_retrieve = False
     else:
         sampling_params = SamplingParams(
             temperature=0.0, top_p=1, max_tokens=25, logprobs=32000)
         preds = model.generate([prompt], sampling_params)
         pred_log_probs = preds[0].outputs[0].logprobs
         preds = [pred.outputs[0].text.split("\n\n")[0] for pred in preds]
-        if "[Retrieval]" not in preds[0]:
-            do_retrieve = False
+        # weird here
+        # if "[Retrieval]" not in preds[0]:
+        #     do_retrieve = False
+        if threshold is not None:
+            ret_token_score_dict = {}
+            for tok, tok_id in ret_tokens.items():
+                prob = pred_log_probs[0][tok_id]
+                ret_token_score_dict[tok] = np.exp(prob)
+            retrieve_prob = ret_token_score_dict["[Retrieval]"] / (
+                    ret_token_score_dict["[Retrieval]"] +
+                    ret_token_score_dict["[No Retrieval]"])
+            do_retrieve = (retrieve_prob > threshold)
         else:
-            if threshold is None:
-                do_retrieve = False
-            else:
-                ret_token_score_dict = {}
-                for tok, tok_id in ret_tokens.items():
-                    prob = pred_log_probs[0][tok_id]
-                    ret_token_score_dict[tok] = np.exp(prob)
-                retrieve_prob = ret_token_score_dict["[Retrieval]"] / (
-                        ret_token_score_dict["[Retrieval]"] +
-                        ret_token_score_dict["[No Retrieval]"])
-                do_retrieve = (retrieve_prob > threshold)
+            do_retrieve = ("[Retrieval]" in preds[0])
 
     if not do_retrieve:
         sampling_params = SamplingParams(
@@ -228,13 +221,13 @@ def call_model_beam_batch(prompt, model, max_new_tokens=15, ctxs=None,
         terminated = False
         node_id = 0
         prediction_tree = {}
-        levels = {}
+        levels = defaultdict(list)
         prediction_tree[node_id] = {"prompt": prompt, "pred": "[Retrieval]",
                                     "processed_pred": "", "score": None,
                                     "ctx": None, "parent": None}
         levels[0] = [0]
         while curr_depth < max_depth:
-            levels[curr_depth] = []
+            # levels[curr_depth] = []
             if curr_depth - 1 in levels and not terminated:
                 for node in levels[curr_depth - 1]:
                     pred = prediction_tree[node]["pred"]
@@ -246,35 +239,36 @@ def call_model_beam_batch(prompt, model, max_new_tokens=15, ctxs=None,
                     score = prediction_tree[node]["score"]
                     if "[Retrieval]" in pred:
                         retrieval_results = {}
-                        preds, scores, overall_score_dict = run_step_generation_batch(
-                            model, prompt + prev_generation, ctxs,
-                            max_new_tokens,
-                            rel_tokens, ret_tokens=ret_tokens,
-                            grd_tokens=grd_tokens, ut_tokens=ut_tokens,
-                            threshold=threshold, w_rel=w_rel, w_sup=w_sup,
-                            w_use=w_use)
-                        for i, (pred, p_score) in enumerate(zip(preds, scores)):
+                        preds, scores, overall_score_dict = (
+                            run_step_generation_batch(
+                                model, prompt + prev_generation, ctxs,
+                                max_new_tokens,
+                                rel_tokens, ret_tokens=ret_tokens,
+                                grd_tokens=grd_tokens, ut_tokens=ut_tokens,
+                                threshold=threshold, w_rel=w_rel, w_sup=w_sup,
+                                w_use=w_use))
+                        for i, (p, p_score) in enumerate(zip(preds, scores)):
                             retrieval_results[i] = {
-                                "pred": pred, "score": p_score}
+                                "pred": p, "score": p_score}
 
                         for i, result in retrieval_results.items():
                             node_id += 1
                             node_score = result["score"] * \
                                          score if score is not None else result[
                                 "score"]
-                            pred = result["pred"]
+                            p = result["pred"]
                             prediction_tree[node_id] = {
                                 "prompt": prompt + prev_generation,
-                                "pred": pred,
+                                "pred": p,
                                 "score": node_score, "ctx": ctxs[i],
                                 "parent": node,
                                 "overall_score_dict": overall_score_dict}
 
-                            if "[Retrieval]" in pred:
-                                gen_result_index = pred.index("[Retrieval]")
-                                prev_generation = pred[:gen_result_index]
+                            if "[Retrieval]" in p:
+                                gen_result_index = p.index("[Retrieval]")
+                                prev_generation = p[:gen_result_index]
                             else:
-                                prev_generation = pred
+                                prev_generation = p
                             prediction_tree[node_id][
                                 "processed_pred"] = prev_generation
                             levels[curr_depth].append(node_id)
@@ -283,16 +277,18 @@ def call_model_beam_batch(prompt, model, max_new_tokens=15, ctxs=None,
                 node2score = {
                     node_id: prediction_tree[node_id]["score"] for node_id in
                     current_rank}
-                top_nodes = sorted(node2score.items(), key=lambda x: x[1],
-                                   reverse=True)[
-                            :beam_width]
+                sorted_nodes = sorted(node2score.items(), key=lambda x: x[1],
+                                      reverse=True)[
+                               :beam_width]
+                top_nodes = sorted_nodes[:beam_width]
+                discard_nodes = sorted_nodes[beam_width:]
                 levels[curr_depth] = [node[0] for node in top_nodes]
+                for n in discard_nodes:
+                    del prediction_tree[n[0]]
                 curr_depth += 1
             else:
                 break
 
-    final_prediction = ""
-    parent = 0
     best_selections = {}
 
     # Traverse from the bottom
@@ -316,31 +312,25 @@ def call_model_beam_batch(prompt, model, max_new_tokens=15, ctxs=None,
     original_splitted_sentences = {}
     ctxs = {}
     for path_i, nodes in best_selections.items():
-        final_prediction[path_i] = " ".join(
-            [prediction_tree[node]["processed_pred"] for node in nodes if
-             node is not None and (
-                     ignore_cont is False or (
-                     ignore_cont is True and "[No support / Contradictory]" not in
-                     prediction_tree[node]["processed_pred"]))])
-        splitted_sentences[path_i] = [prediction_tree[node]["processed_pred"]
-                                      for node in nodes if
-                                      node is not None and (
-                                              ignore_cont is False or (
-                                              ignore_cont is True and "[No support / Contradictory]" not in
-                                              prediction_tree[node][
-                                                  "processed_pred"]))]
-        original_splitted_sentences[path_i] = [prediction_tree[node]["pred"] for
-                                               node in nodes if
-                                               node is not None and (
-                                                       ignore_cont is False or (
-                                                       ignore_cont is True and "[No support / Contradictory]" not in
-                                                       prediction_tree[
-                                                           node][
-                                                           "processed_pred"]))]
-        ctxs[path_i] = [prediction_tree[node]["ctx"] for node in nodes if
-                        node is not None and (ignore_cont is False or (
-                                ignore_cont is True and "[No support / Contradictory]" not in
-                                prediction_tree[node]["processed_pred"]))]
+        splitted_sentences[path_i] = [
+            prediction_tree[node]["processed_pred"] for node in nodes if
+            node is not None and (
+                    (ignore_cont and "[No support / Contradictory]" not in
+                     prediction_tree[node]["processed_pred"]) or not ignore_cont
+            )]
+        final_prediction[path_i] = " ".join(splitted_sentences[path_i])
+        original_splitted_sentences[path_i] = [
+            prediction_tree[node]["pred"] for node in nodes if
+            node is not None and (
+                    (ignore_cont and "[No support / Contradictory]" not in
+                     prediction_tree[node]["processed_pred"]) or not ignore_cont
+            )]
+        ctxs[path_i] = [
+            prediction_tree[node]["ctx"] for node in nodes if
+            node is not None and (
+                    (ignore_cont and "[No support / Contradictory]" not in
+                     prediction_tree[node]["processed_pred"]) or not ignore_cont
+            )]
 
     result = {"final_prediction": final_prediction,
               "splitted_sentences": splitted_sentences,
