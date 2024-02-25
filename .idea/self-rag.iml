@@ -2,7 +2,7 @@
 <module type="PYTHON_MODULE" version="4">
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$" />
-    <orderEntry type="jdk" jdkName="Remote Python 3.10.13 (sftp://wz283@two.cs.rutgers.edu:22/common/users/wz283/old_home/wz283/anaconda/envs/self-rag/bin/python)" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Remote Python 3.10.13 (sftp://wz283@two.cs.rutgers.edu:22/common/users/wz283/old_home/wz283/anaconda/envs/self-rag/bin/python) (2)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="PyDocumentationSettings">

@@ -1,3 +1,4 @@
+#!/bin/bash
 MODEL=$1
 DATA_PATH=$2
 MODE=$3

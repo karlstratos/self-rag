@@ -1,3 +1,4 @@
+#!/bin/bash
 model=$1
 ndocs=$2
 max_new_tokens=$3
@@ -6,6 +7,12 @@ input_file=$5
 output_file=$6
 mode=$7
 cache_dir=$8
+
+# model= selfrag/selfrag_llama2_7b
+# ndocs=5
+# max_new_tokens=300
+#task=[asqa, factscore]
+# mode= [always_retrieve, adaptive_retrieval]
 
 
 python run_long_form_static.py \
