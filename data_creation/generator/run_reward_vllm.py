@@ -120,7 +120,7 @@ print('Cuda:', torch.cuda.is_available())
 print('pwd', os.getcwd())
 
 
-def posprocess_output(answer, return_score=False):
+def postprocess_output(answer, return_score=False):
     answer = answer.replace("</s>", "")
     answer = answer.replace("<unk>", "")
     answer = answer.replace("[PAD]", "")
@@ -132,7 +132,7 @@ def call_model(prompts, model, max_new_tokens=50):
         temperature=0.0, top_p=1.0, max_tokens=max_new_tokens)
     preds = model.generate(prompts, sampling_params)
     preds = [pred.outputs[0].text.split("\n\n")[0] for pred in preds]
-    postprocessed_preds = [posprocess_output(pred) for pred in preds]
+    postprocessed_preds = [postprocess_output(pred) for pred in preds]
     return postprocessed_preds, preds
 
 
@@ -150,35 +150,18 @@ def load_jsonlines(file):
     return lst
 
 
-def process_data(input_data, inst_mode, input_mode, split="train", multi_retrieval=False):
+def process_data(input_data, inst_mode, input_mode, split="train",
+                 multi_retrieval=False):
     if split == "train":
         prompt = ALPACA_PROMPT_DICT["prompt_input"].format_map(input_data)
         output = str(input_data["output"])
         return prompt, output
     else:
         instruction = PROMPT_DICT[inst_mode]
-        if multi_retrieval is True and (input_data["sent_idx"] == 0 or "preceding_sentences" not in input_data or type(input_data["preceding_sentences"]) is not str or len(input_data["preceding_sentences"]) == 0):
-            input = PROMPT_DICT[input_mode +
-                                "_no_preceding"].format_map(input_data)
-        else:
-            input = PROMPT_DICT[input_mode].format_map(input_data)
-        prompt = ALPACA_PROMPT_DICT["prompt_input"].format_map(
-            {"instruction": instruction, "input": input})
-        output = "None"
-        return prompt, output
-
-
-def process_data(input_data, inst_mode, input_mode, split="train", multi_retrieval=False):
-    if split == "train":
-        prompt = ALPACA_PROMPT_DICT["prompt_input"].format_map(input_data)
-        # instruction = PROMPT_DICT[inst_mode]
-        # input = PROMPT_DICT[input_mode].format_map(input_data)
-        # prompt = ALPACA_PROMPT_DICT["prompt_input"].format_map({"instruction": instruction, "input": input})
-        output = str(input_data["output"])
-        return prompt, output
-    else:
-        instruction = PROMPT_DICT[inst_mode]
-        if multi_retrieval is True and (input_data["sent_idx"] == 0 or "preceding_sentences" not in input_data or type(input_data["preceding_sentences"]) is not str or len(input_data["preceding_sentences"]) == 0):
+        if multi_retrieval and (input_data[
+                                    "sent_idx"] == 0 or "preceding_sentences" not in input_data or type(
+                input_data["preceding_sentences"]) is not str or len(
+                input_data["preceding_sentences"]) == 0):
             input = PROMPT_DICT[input_mode +
                                 "_no_preceding"].format_map(input_data)
         else:
@@ -224,11 +207,14 @@ def main():
                         help="Batch size for question encoding")
     parser.add_argument('--download_dir', type=str, help="specify download dir",
                         default="/gscratch/h2lab/akari/model_cache")
+    parser.add_argument("--world_size", type=int, default=1,
+                        help="world size to use multiple GPUs.")
 
     args = parser.parse_args()
 
     gpt = args.model_name
-    model = LLM(model=gpt, download_dir=args.download_dir)
+    model = LLM(model=gpt, download_dir=args.download_dir,
+                tensor_parallel_size=args.world_size)
 
     input_path = args.input_file
     if input_path.endswith(".json") or ".json_" in input_path:
@@ -251,11 +237,10 @@ def main():
     if args.split == "train":
         correct, total = 0, 0
     for idx in tqdm(range(len(input_data) // args.batch_size)):
-        batch = input_data[idx*args.batch_size:(idx+1)*args.batch_size]
-        processed_batch = [process_data(
-            item, inst_mode=args.inst_mode, input_mode=args.input_mode, split=args.split)[0] for item in batch]
-        posprocess_output = [process_data(
-            item, inst_mode=args.inst_mode, input_mode=args.input_mode, split=args.split)[1] for item in batch]
+        batch = input_data[idx * args.batch_size:(idx + 1) * args.batch_size]
+        processed_batch, posprocess_output = list(zip(*[process_data(
+            item, inst_mode=args.inst_mode, input_mode=args.input_mode,
+            split=args.split) for item in batch]))
         preds, raw_edits = call_model(
             processed_batch, model=model, max_new_tokens=args.max_new_tokens)
         for j, item in enumerate(batch):
@@ -268,7 +253,9 @@ def main():
             item["pred"] = pred
             if args.split == "train":
                 item["output"] = posprocess_output[j]
-                if len(item["pred"]) != "" and item["pred"] == item["output"] or item["pred"] in item["output"] or item["output"] in item["pred"]:
+                if len(item["pred"]) != "" and item["pred"] == item["output"] or \
+                        item["pred"] in item["output"] or item["output"] in \
+                        item["pred"]:
                     item["correct"] = 1.0
                 else:
                     print("pred: {0} output: {1}".format(
@@ -279,11 +266,10 @@ def main():
             json.dump(predicted_results, outfile)
 
     if len(input_data) % args.batch_size > 0:
-        batch = input_data[(idx+1)*args.batch_size:]
-        processed_batch = [process_data(
-            item, inst_mode=args.inst_mode, input_mode=args.input_mode, split=args.split)[0] for item in batch]
-        posprocess_output = [process_data(
-            item, inst_mode=args.inst_mode, input_mode=args.input_mode, split=args.split)[1] for item in batch]
+        batch = input_data[(idx + 1) * args.batch_size:]
+        processed_batch, posprocess_output = list(zip(*[process_data(
+            item, inst_mode=args.inst_mode, input_mode=args.input_mode,
+            split=args.split) for item in batch]))
         preds, raw_edits = call_model(
             processed_batch, model=model, max_new_tokens=args.max_new_tokens)
         for j, item in enumerate(batch):
@@ -291,7 +277,9 @@ def main():
             item["pred"] = pred
             if args.split == "train":
                 item["output"] = posprocess_output[j]
-                if len(item["pred"]) != "" and item["pred"] == item["output"] or item["pred"] in item["output"] or item["output"] in item["pred"]:
+                if len(item["pred"]) != "" and item["pred"] == item["output"] or \
+                        item["pred"] in item["output"] or item["output"] in \
+                        item["pred"]:
                     item["correct"] = 1.0
                 else:
                     print("pred: {0} output: {1}".format(
@@ -300,7 +288,7 @@ def main():
 
     if args.split == "train":
         print(np.mean([item["correct"]
-              for item in input_data if item["pred"] != ""]))
+                       for item in input_data if item["pred"] != ""]))
 
     with open(args.result_fp, "w") as outfile:
         json.dump(predicted_results, outfile)
